@@ -78,30 +78,43 @@ app.post('/api/infer', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ ok:false, error: e.message }); }
 });
 
-// Transcribe uploaded audio via ElevenLabs Scribe STT
+// Transcribe uploaded audio via ElevenLabs Scribe STT (fixed: use model_id)
 app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   const audioPath = req.file.path;
   try {
-    // ElevenLabs Scribe endpoint - may vary; adapt if docs differ
     const scribeUrl = `https://api.elevenlabs.io/v1/speech-to-text`;
     const FormData = require('form-data');
     const form = new FormData();
     form.append('file', fs.createReadStream(path.resolve(audioPath)));
-    form.append('model', 'scribe_v1'); // adjust if ElevenLabs uses different model name
+    // ElevenLabs expects 'model_id' not 'model'
+    form.append('model_id', 'scribe_v1');
+
     const sttRes = await fetch(scribeUrl, {
       method: 'POST',
       headers: { 'xi-api-key': ELEVEN_KEY, ...form.getHeaders() },
       body: form
     });
-    const sttJson = await sttRes.json();
+
+    const status = sttRes.status;
+    const textBody = await sttRes.text();
+    console.log(`[ElevenLabs STT] status=${status} body=${textBody}`);
+
     fs.unlinkSync(audioPath);
-    const transcript = sttJson.text || sttJson.transcript || JSON.stringify(sttJson);
+    let sttJson;
+    try { sttJson = JSON.parse(textBody); } catch(e) { sttJson = { rawText: textBody }; }
+
+    if (!sttRes.ok) {
+      return res.status(502).json({ ok: false, error: 'elevenlabs_stt_failed', status, body: sttJson });
+    }
+
+    const transcript = sttJson.text || sttJson.transcript || sttJson.result || textBody;
     return res.json({ ok: true, transcript, raw: sttJson });
   } catch (e) {
-    console.error(e);
+    console.error('[Transcribe error]', e);
     if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
     return res.status(500).json({ ok:false, error: e.message });
   }
 });
+
 
 app.listen(PORT, () => console.log(`Memory Amigo voice server running on ${PORT}`));
