@@ -28,9 +28,22 @@ async function raindropCall(path, method='POST', payload=null) {
   try { return JSON.parse(text); } catch(e) { return { raw: text, status: res.status, body: text }; }
 }
 
-// Save text entry to SmartMemory
+// Save text entry to SmartMemory (with safe mock if Raindrop not configured)
 app.post('/api/save', async (req, res) => {
   const { title, content, categories, tags, mood, date } = req.body;
+
+  // If RAINDROP_API_URL is still the placeholder, return a mock response
+  if (!RAINDROP_API_URL || RAINDROP_API_URL.includes('example')) {
+    console.log('RAINDROP not configured — returning mock save response');
+    const mock = {
+      id: 'mock-' + Date.now(),
+      title: title || (content||'').slice(0,40),
+      content,
+      metadata: { categories: categories || [], mood: mood || null, date: date || new Date().toISOString(), source: 'voice' }
+    };
+    return res.json({ ok: true, result: mock });
+  }
+
   try {
     const payload = {
       title: title || (content||'').slice(0,40),
@@ -42,6 +55,7 @@ app.post('/api/save', async (req, res) => {
     res.json({ ok: true, result });
   } catch (e) { console.error(e); res.status(500).json({ ok:false, error: e.message }); }
 });
+
 
 // Semantic search via SmartSQL
 app.get('/api/search', async (req, res) => {
