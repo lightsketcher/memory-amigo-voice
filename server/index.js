@@ -50,9 +50,52 @@ async function raindropCall(path, method = 'POST', payload = null) {
 }
 
 
-// Safe save that prefers Raindrop only if configured, otherwise uses local mock
-app.post('/api/save', async (req, res) => {
-  const body = req.body || {};
+// Transcribe uploaded audio via ElevenLabs Scribe STT (safe: reads env at runtime)
+app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
+  const audioPath = req.file && req.file.path;
+  if (!audioPath) return res.status(400).json({ ok: false, error: 'no_audio_file' });
+
+  try {
+    // read key directly from process.env at call time to avoid ReferenceError
+    const ELEVEN_KEY_RUNTIME = (process.env.ELEVEN_KEY || process.env.ELEVEN_API_KEY || '').trim();
+    if (!ELEVEN_KEY_RUNTIME) {
+      // Clean up uploaded file before returning
+      if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+      return res.status(500).json({ ok: false, error: 'ELEVEN_KEY_NOT_SET' });
+    }
+
+    const scribeUrl = `https://api.elevenlabs.io/v1/speech-to-text`;
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('file', fs.createReadStream(path.resolve(audioPath)));
+    form.append('model_id', 'scribe_v1');
+
+    const sttRes = await fetch(scribeUrl, {
+      method: 'POST',
+      headers: { 'xi-api-key': ELEVEN_KEY_RUNTIME, ...form.getHeaders() },
+      body: form
+    });
+
+    const status = sttRes.status;
+    const textBody = await sttRes.text();
+    console.log(`[ElevenLabs STT] status=${status} body=${textBody}`);
+
+    if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+    let sttJson;
+    try { sttJson = JSON.parse(textBody); } catch (e) { sttJson = { rawText: textBody }; }
+
+    if (!sttRes.ok) {
+      return res.status(502).json({ ok: false, error: 'elevenlabs_stt_failed', status, body: sttJson });
+    }
+
+    const transcript = sttJson.text || sttJson.transcript || sttJson.result || textBody;
+    return res.json({ ok: true, transcript, raw: sttJson });
+  } catch (e) {
+    console.error('[Transcribe error]', e);
+    if (audioPath && fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
   // If Raindrop is configured, attempt to call it (but we handle failures)
   if (raindropIsConfigured()) {
