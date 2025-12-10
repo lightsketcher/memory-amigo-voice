@@ -14,19 +14,40 @@ app.use(express.static('public')); // serve frontend from public/
 const upload = multer({ dest: 'uploads/' });
 const PORT = process.env.PORT || 8080;
 
-// === CONFIG (set these as env vars in Replit / Vultr) ===
-const RAINDROP_API_URL = process.env.RAINDROP_API_URL || "https://api.raindrop.example";
-const RAINDROP_API_KEY = process.env.RAINDROP_API_KEY || "REPLACE_RAINDROP_KEY";
-const ELEVEN_KEY = process.env.ELEVEN_KEY || "REPLACE_ELEVEN_KEY";
-// ======================================================
+// ---------------- Raindrop config + safe raindropCall helper ----------------
+const RAINDROP_API_URL = (process.env.RAINDROP_MCP_URL || process.env.RAINDROP_API_URL || '').trim();
+const RAINDROP_API_KEY = (process.env.RAINDROP_API_KEY || '').trim();
 
-async function raindropCall(path, method='POST', payload=null) {
-  const opts = { method, headers: { 'Authorization': `Bearer ${RAINDROP_API_KEY}`, 'Content-Type': 'application/json' } };
+function raindropIsConfigured() {
+  if (!RAINDROP_API_URL) return false;
+  const l = RAINDROP_API_URL.toLowerCase();
+  // treat obvious placeholders as not configured
+  if (l.includes('example') || l.includes('raindrop.example') || l.includes('api.raindrop')) return false;
+  if (!RAINDROP_API_KEY) return false;
+  return true;
+}
+
+// Safe raindropCall: returns RAINDROP_NOT_CONFIGURED if not set, otherwise performs the call
+async function raindropCall(path, method = 'POST', payload = null) {
+  if (!raindropIsConfigured()) {
+    // Return a predictable object so calling code can fallback to mock
+    return { ok: false, error: 'RAINDROP_NOT_CONFIGURED', path, method, payload };
+  }
+
+  const opts = {
+    method,
+    headers: {
+      'Authorization': `Bearer ${RAINDROP_API_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  };
   if (payload) opts.body = JSON.stringify(payload);
+
   const res = await fetch(`${RAINDROP_API_URL}${path}`, opts);
   const text = await res.text();
-  try { return JSON.parse(text); } catch(e) { return { raw: text, status: res.status, body: text }; }
+  try { return JSON.parse(text); } catch (e) { return { raw: text, status: res.status, body: text }; }
 }
+
 
 // Simple save route that redirects to the mock SmartMemory save endpoint
 app.post('/api/save', async (req, res) => {
