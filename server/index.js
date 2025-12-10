@@ -19,7 +19,6 @@ const RAINDROP_API_URL = (process.env.RAINDROP_MCP_URL || process.env.RAINDROP_A
 const RAINDROP_API_KEY = (process.env.RAINDROP_API_KEY || '').trim();
 const ELEVEN_KEY = (process.env.ELEVEN_KEY || process.env.ELEVEN_API_KEY || '').trim();
 
-
 function raindropIsConfigured() {
   if (!RAINDROP_API_URL) return false;
   const l = RAINDROP_API_URL.toLowerCase();
