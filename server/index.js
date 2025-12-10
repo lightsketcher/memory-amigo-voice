@@ -49,12 +49,61 @@ async function raindropCall(path, method = 'POST', payload = null) {
 }
 
 
-// Simple save route that redirects to the mock SmartMemory save endpoint
+// Safe save that prefers Raindrop only if configured, otherwise uses local mock
 app.post('/api/save', async (req, res) => {
-  // transparent proxy to mock smartmemory save
-  // uses HTTP 307 to forward POST with same body
-  return res.redirect(307, '/api/smartmemory/save');
+  const body = req.body || {};
+
+  // If Raindrop is configured, attempt to call it (but we handle failures)
+  if (raindropIsConfigured()) {
+    try {
+      const payload = {
+        title: body.title || (body.content||'').slice(0,40),
+        content: body.content,
+        tags: body.tags || [],
+        metadata: {
+          categories: body.categories || [],
+          mood: body.mood || null,
+          date: body.date || new Date().toISOString(),
+          source: body.source || 'voice',
+          audio_url: body.audio_url || null
+        }
+      };
+      const result = await raindropCall('/smartmemory/save', 'POST', payload);
+      // If raindropCall flagged not-configured or returned an error, fall through to mock
+      if (result && result.ok) return res.json({ ok:true, result, provider: 'raindrop' });
+      // else continue to fallback to mock
+    } catch (e) {
+      console.error('Raindrop save attempt failed, falling back to mock', e);
+      // continue to fallback
+    }
+  }
+
+  // FALLBACK: write to local mock storage (guaranteed)
+  try {
+    const payload = {
+      title: body.title || (body.content||'').slice(0,40),
+      content: body.content || '',
+      tags: body.tags || [],
+      metadata: {
+        categories: body.categories || [],
+        mood: body.mood || null,
+        date: body.date || new Date().toISOString(),
+        source: body.source || 'voice',
+        audio_url: body.audio_url || null
+      }
+    };
+    const mem = loadSmartMem();
+    const id = 'mm_' + Date.now();
+    const item = { id, title: payload.title, content: payload.content, tags: payload.tags, metadata: payload.metadata };
+    mem.items.unshift(item);
+    saveSmartMem(mem);
+    return res.json({ ok: true, result: item, mock: true });
+  } catch (e) {
+    console.error('Mock save failed', e);
+    return res.status(500).json({ ok:false, error: e.message });
+  }
 });
+
 
 
 // Semantic search via SmartSQL
