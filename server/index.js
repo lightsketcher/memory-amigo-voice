@@ -1,6 +1,6 @@
-// index.js (Voice-Input Only) - fixed safe version
+// index.js (Voice-Input Only)
 const express = require('express');
-const fetch = require('node-fetch'); // ok to keep
+const fetch = require('node-fetch');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const multer = require('multer');
@@ -9,7 +9,7 @@ const path = require('path');
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json({ limit: '2mb' }));
+app.use(bodyParser.json({limit:'1mb'}));
 app.use(express.static('public')); // serve frontend from public/
 const upload = multer({ dest: 'uploads/' });
 const PORT = process.env.PORT || 8080;
@@ -17,7 +17,6 @@ const PORT = process.env.PORT || 8080;
 // ---------------- Raindrop config + safe raindropCall helper ----------------
 const RAINDROP_API_URL = (process.env.RAINDROP_MCP_URL || process.env.RAINDROP_API_URL || '').trim();
 const RAINDROP_API_KEY = (process.env.RAINDROP_API_KEY || '').trim();
-const ELEVEN_KEY = (process.env.ELEVEN_KEY || process.env.ELEVEN_API_KEY || '').trim();
 
 function raindropIsConfigured() {
   if (!RAINDROP_API_URL) return false;
@@ -49,80 +48,8 @@ async function raindropCall(path, method = 'POST', payload = null) {
   try { return JSON.parse(text); } catch (e) { return { raw: text, status: res.status, body: text }; }
 }
 
-// ---------------------- MOCK SMARTMEMORY (LOCAL STORAGE) ----------------------
-const SMARTMEM_FILE = path.join(__dirname, 'smartmemory.json');
 
-// helper: load & save JSON
-function loadSmartMem() {
-  try {
-    if (!fs.existsSync(SMARTMEM_FILE)) {
-      fs.writeFileSync(SMARTMEM_FILE, JSON.stringify({ items: [] }, null, 2));
-    }
-    const raw = fs.readFileSync(SMARTMEM_FILE, 'utf8');
-    return JSON.parse(raw);
-  } catch (e) {
-    console.error('Error loading smartmemory:', e);
-    return { items: [] };
-  }
-}
-function saveSmartMem(data) {
-  try {
-    fs.writeFileSync(SMARTMEM_FILE, JSON.stringify(data, null, 2));
-    return true;
-  } catch (e) {
-    console.error('Error saving smartmemory:', e);
-    return false;
-  }
-}
-
-// ------------------ Helper: local inference (same logic as mock infer route) ----
-function localInferWeekly() {
-  const mem = loadSmartMem();
-  const recent = mem.items.slice(0, 20);
-
-  const catCount = {};
-  const moodCount = {};
-  const learnings = [];
-
-  recent.forEach(it => {
-    const categories = it.metadata?.categories || [];
-    categories.forEach(c => catCount[c] = (catCount[c] || 0) + 1);
-    const mood = it.metadata?.mood || 'neutral';
-    moodCount[mood] = (moodCount[mood] || 0) + 1;
-    const content = it.content || '';
-    if (/learn|realize|understand|lesson/gi.test(content)) {
-      learnings.push(content.slice(0, 150));
-    }
-  });
-
-  const themes = Object.entries(catCount)
-    .sort((a,b) => b[1]-a[1])
-    .map(([cat]) => cat)
-    .slice(0,3);
-
-  const moodSummary = Object.entries(moodCount)
-    .sort((a,b) => b[1]-a[1])
-    .map(([m,c]) => `${m} (${c})`)
-    .slice(0,3);
-
-  return {
-    ok:true,
-    summary: {
-      themes: themes.length ? themes : ["no major themes"],
-      mood_summary: moodSummary,
-      top_learnings: learnings.slice(0,3),
-      next_steps: [
-        "Reflect on your dominant theme.",
-        "Act on one insight tomorrow.",
-        "Spend 3 minutes reviewing memories each morning."
-      ]
-    }
-  };
-}
-
-// ---------------------- ROUTES ----------------------
-
-// SAFE SAVE: prefer Raindrop if actually configured, otherwise use local mock
+// Safe save that prefers Raindrop only if configured, otherwise uses local mock
 app.post('/api/save', async (req, res) => {
   const body = req.body || {};
 
@@ -142,14 +69,12 @@ app.post('/api/save', async (req, res) => {
         }
       };
       const result = await raindropCall('/smartmemory/save', 'POST', payload);
-      if (result && result.ok) {
-        console.log('Saved to Raindrop MCP');
-        return res.json({ ok:true, result, provider: 'raindrop' });
-      }
-      // otherwise fall through to mock
-      console.log('Raindrop call returned not-ok, falling back to mock', result && result.error);
+      // If raindropCall flagged not-configured or returned an error, fall through to mock
+      if (result && result.ok) return res.json({ ok:true, result, provider: 'raindrop' });
+      // else continue to fallback to mock
     } catch (e) {
       console.error('Raindrop save attempt failed, falling back to mock', e);
+      // continue to fallback
     }
   }
 
@@ -172,7 +97,6 @@ app.post('/api/save', async (req, res) => {
     const item = { id, title: payload.title, content: payload.content, tags: payload.tags, metadata: payload.metadata };
     mem.items.unshift(item);
     saveSmartMem(mem);
-    console.log('Saved to local mock smartmemory id=', id);
     return res.json({ ok: true, result: item, mock: true });
   } catch (e) {
     console.error('Mock save failed', e);
@@ -180,89 +104,47 @@ app.post('/api/save', async (req, res) => {
   }
 });
 
-// Semantic search via SmartSQL (fallback to local substring search)
+
+
+// Semantic search via SmartSQL
 app.get('/api/search', async (req, res) => {
-  const q = (req.query.q || '').trim();
-  if (!q) return res.json({ ok:true, result: [] });
-
-  if (raindropIsConfigured()) {
-    try {
-      const payload = { query: q, limit: 12 };
-      const result = await raindropCall('/smartsql/query', 'POST', payload);
-      if (result && result.ok) return res.json({ ok:true, result });
-      // else fall back
-    } catch (e) {
-      console.error('Raindrop search failed, falling back', e);
-    }
-  }
-
-  // local simple substring search
-  const mem = loadSmartMem();
-  const ql = q.toLowerCase();
-  const matches = mem.items.filter(it => (((it.title||'') + ' ' + (it.content||'')).toLowerCase().includes(ql))).slice(0,12);
-  return res.json({ ok:true, result: { items: matches } });
+  const q = req.query.q || '';
+  try {
+    const payload = { query: q, limit: 12 };
+    const result = await raindropCall('/smartsql/query', 'POST', payload);
+    res.json({ ok: true, result });
+  } catch (e) { console.error(e); res.status(500).json({ ok:false, error: e.message }); }
 });
 
-// Recent entries list (convenience) - fallback to local
+// Recent entries list (convenience)
 app.get('/api/recent', async (req, res) => {
-  if (raindropIsConfigured()) {
-    try {
-      const payload = { limit: 20 };
-      const result = await raindropCall('/smartmemory/list', 'POST', payload);
-      if (result && result.ok) return res.json({ ok:true, result });
-    } catch (e) {
-      console.error('Raindrop recent failed, falling back', e);
-    }
-  }
-  const mem = loadSmartMem();
-  return res.json({ ok:true, result: { items: mem.items.slice(0, 20) } });
+  try {
+    const payload = { limit: 20 };
+    const result = await raindropCall('/smartmemory/list', 'POST', payload);
+    res.json({ ok: true, result });
+  } catch (e) { console.error(e); res.status(500).json({ ok:false, error: e.message }); }
 });
 
-// Infer / Summarize (wrap SmartInference) - fallback to local inference
+// Infer / Summarize (wrap SmartInference)
 app.post('/api/infer', async (req, res) => {
   const { mode, contextEntries, query } = req.body;
-  if (raindropIsConfigured()) {
-    try {
-      let prompt = '';
-      if (mode === 'weekly_summary') {
-        prompt = `You are Memory Amigo assistant. Summarize the entries into a concise weekly report. Provide 3 themes, mood summary, top 3 learnings, 3 next steps.\n\nEntries:\n${(contextEntries||[]).join('\n\n')}`;
-      } else {
-        prompt = `Answer: "${query}". Use context:\n${(contextEntries||[]).join('\n\n')}`;
-      }
-      const payload = { prompt, options: { temperature:0.2, maxTokens:700 } };
-      const result = await raindropCall('/smartinference/infer', 'POST', payload);
-      if (result && result.ok) return res.json({ ok:true, result });
-    } catch (e) {
-      console.error('Raindrop inference failed, falling back', e);
+  try {
+    let prompt = '';
+    if (mode === 'weekly_summary') {
+      prompt = `You are Memory Amigo assistant. Summarize the entries into a concise weekly report. Provide 3 themes, mood summary, top 3 learnings, 3 next steps.\n\nEntries:\n${contextEntries.join('\n\n')}`;
+    } else {
+      prompt = `Answer: "${query}". Use context:\n${contextEntries.join('\n\n')}`;
     }
-  }
-
-  // Fallback to local inference (weekly or query)
-  if (mode === 'weekly_summary') {
-    return res.json(localInferWeekly());
-  }
-  // for simple query inference, return top matches
-  const mem = loadSmartMem();
-  if (query && query.trim()) {
-    const ql = query.toLowerCase();
-    const matches = mem.items.filter(it => (((it.title||'') + ' ' + (it.content||'')).toLowerCase().includes(ql))).slice(0,8);
-    const answer = matches.map(m => `- ${m.title}: ${m.content.slice(0,140)}`).join('\n') || 'No matches found.';
-    return res.json({ ok:true, answer, matches });
-  }
-  return res.status(400).json({ ok:false, error: 'no mode or query provided' });
+    const payload = { prompt, options: { temperature:0.2, maxTokens:700 } };
+    const result = await raindropCall('/smartinference/infer', 'POST', payload);
+    res.json({ ok: true, result });
+  } catch (e) { console.error(e); res.status(500).json({ ok:false, error: e.message }); }
 });
 
 // Transcribe uploaded audio via ElevenLabs Scribe STT (fixed: use model_id)
 app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
-  const audioPath = req.file && req.file.path;
-  if (!audioPath) return res.status(400).json({ ok:false, error:'no audio file' });
+  const audioPath = req.file.path;
   try {
-    if (!ELEVEN_KEY) {
-      console.warn('ELEVEN_KEY not set in env; returning error');
-      if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
-      return res.status(500).json({ ok:false, error: 'ELEVEN_KEY_NOT_SET' });
-    }
-
     const scribeUrl = `https://api.elevenlabs.io/v1/speech-to-text`;
     const FormData = require('form-data');
     const form = new FormData();
@@ -280,7 +162,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
     const textBody = await sttRes.text();
     console.log(`[ElevenLabs STT] status=${status} body=${textBody}`);
 
-    if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+    fs.unlinkSync(audioPath);
     let sttJson;
     try { sttJson = JSON.parse(textBody); } catch(e) { sttJson = { rawText: textBody }; }
 
@@ -292,12 +174,38 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
     return res.json({ ok: true, transcript, raw: sttJson });
   } catch (e) {
     console.error('[Transcribe error]', e);
-    if (audioPath && fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+    if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
     return res.status(500).json({ ok:false, error: e.message });
   }
 });
 
-// ---------------------- Mock smartmemory endpoints (already safe) ----------------------
+// ---------------------- MOCK SMARTMEMORY (LOCAL STORAGE) ----------------------
+
+const SMARTMEM_FILE = path.join(__dirname, 'smartmemory.json');
+
+// helper: load & save JSON
+function loadSmartMem() {
+  try {
+    if (!fs.existsSync(SMARTMEM_FILE)) {
+      fs.writeFileSync(SMARTMEM_FILE, JSON.stringify({ items: [] }, null, 2));
+    }
+    const raw = fs.readFileSync(SMARTMEM_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch (e) {
+    console.error('Error loading smartmemory:', e);
+    return { items: [] };
+  }
+}
+
+function saveSmartMem(data) {
+  try {
+    fs.writeFileSync(SMARTMEM_FILE, JSON.stringify(data, null, 2));
+    return true;
+  } catch (e) {
+    console.error('Error saving smartmemory:', e);
+    return false;
+  }
+}
 
 // SAVE MEMORY
 app.post('/api/smartmemory/save', (req, res) => {
