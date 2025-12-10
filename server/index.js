@@ -130,5 +130,151 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   }
 });
 
+// ---------------------- MOCK SMARTMEMORY (LOCAL STORAGE) ----------------------
+
+const SMARTMEM_FILE = path.join(__dirname, 'smartmemory.json');
+
+// helper: load & save JSON
+function loadSmartMem() {
+  try {
+    if (!fs.existsSync(SMARTMEM_FILE)) {
+      fs.writeFileSync(SMARTMEM_FILE, JSON.stringify({ items: [] }, null, 2));
+    }
+    const raw = fs.readFileSync(SMARTMEM_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch (e) {
+    console.error('Error loading smartmemory:', e);
+    return { items: [] };
+  }
+}
+
+function saveSmartMem(data) {
+  try {
+    fs.writeFileSync(SMARTMEM_FILE, JSON.stringify(data, null, 2));
+    return true;
+  } catch (e) {
+    console.error('Error saving smartmemory:', e);
+    return false;
+  }
+}
+
+// SAVE MEMORY
+app.post('/api/smartmemory/save', (req, res) => {
+  const body = req.body || {};
+  const mem = loadSmartMem();
+  const id = "mm_" + Date.now();
+
+  const item = {
+    id,
+    title: body.title || (body.content || '').slice(0, 40),
+    content: body.content || '',
+    tags: body.tags || [],
+    metadata: {
+      categories: body.categories || [],
+      mood: body.mood || null,
+      date: body.date || new Date().toISOString(),
+      source: body.source || 'voice',
+      audio_url: body.audio_url || null
+    }
+  };
+
+  mem.items.unshift(item);
+  saveSmartMem(mem);
+
+  return res.json({ ok: true, result: item, mock: true });
+});
+
+// LIST MEMORY
+app.post('/api/smartmemory/list', (req, res) => {
+  const { limit } = req.body || {};
+  const mem = loadSmartMem();
+  const items = mem.items.slice(0, limit || 50);
+  return res.json({ ok: true, items });
+});
+
+// QUERY MEMORY
+app.post('/api/smartmemory/query', (req, res) => {
+  const { query, limit } = req.body || {};
+  if (!query || !query.trim()) return res.json({ ok: true, items: [] });
+
+  const q = query.toLowerCase();
+  const mem = loadSmartMem();
+  const items = mem.items
+    .filter(item => {
+      const text = ((item.title || '') + ' ' + (item.content || '')).toLowerCase();
+      return text.includes(q) || (item.tags || []).some(t => t.toLowerCase().includes(q));
+    })
+    .slice(0, limit || 50);
+
+  return res.json({ ok: true, items });
+});
+
+// INFERENCE (Weekly Summary, Mood, Themes)
+app.post('/api/smartmemory/infer', (req, res) => {
+  const { mode, query } = req.body || {};
+  const mem = loadSmartMem();
+  const recent = mem.items.slice(0, 20);
+
+  if (mode === 'weekly_summary') {
+    const catCount = {};
+    const moodCount = {};
+    const learnings = [];
+
+    recent.forEach(it => {
+      const categories = it.metadata?.categories || [];
+      categories.forEach(c => catCount[c] = (catCount[c] || 0) + 1);
+
+      const mood = it.metadata?.mood || 'neutral';
+      moodCount[mood] = (moodCount[mood] || 0) + 1;
+
+      const content = it.content || '';
+      if (/learn|realize|understand|lesson/gi.test(content)) {
+        learnings.push(content.slice(0, 150));
+      }
+    });
+
+    const themes = Object.entries(catCount)
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat]) => cat)
+      .slice(0, 3);
+
+    const moodSummary = Object.entries(moodCount)
+      .sort((a, b) => b[1] - a[1])
+      .map(([m, c]) => `${m} (${c})`)
+      .slice(0, 3);
+
+    return res.json({
+      ok: true,
+      summary: {
+        themes: themes.length ? themes : ["no major themes"],
+        mood_summary: moodSummary,
+        top_learnings: learnings.slice(0, 3),
+        next_steps: [
+          "Reflect on your dominant theme.",
+          "Act on one insight tomorrow.",
+          "Spend 3 minutes reviewing memories each morning."
+        ]
+      }
+    });
+  }
+
+  // Simple text search inference
+  if (query) {
+    const q = query.toLowerCase();
+    const matches = recent.filter(it =>
+      ((it.title || '') + ' ' + (it.content || '')).toLowerCase().includes(q)
+    ).slice(0, 8);
+
+    return res.json({
+      ok: true,
+      answer:
+        matches.map(m => `- ${m.title}: ${m.content.slice(0, 140)}`).join("\n") ||
+        "No matches found.",
+      matches
+    });
+  }
+
+  return res.json({ ok: false, error: "No mode or query provided" });
+});
 
 app.listen(PORT, () => console.log(`Memory Amigo voice server running on ${PORT}`));
