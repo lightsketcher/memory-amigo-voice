@@ -97,6 +97,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   }
 });
 
+
   // If Raindrop is configured, attempt to call it (but we handle failures)
   if (raindropIsConfigured()) {
     try {
