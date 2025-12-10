@@ -17,6 +17,8 @@ const PORT = process.env.PORT || 8080;
 // ---------------- Raindrop config + safe raindropCall helper ----------------
 const RAINDROP_API_URL = (process.env.RAINDROP_MCP_URL || process.env.RAINDROP_API_URL || '').trim();
 const RAINDROP_API_KEY = (process.env.RAINDROP_API_KEY || '').trim();
+const ELEVEN_KEY = (process.env.ELEVEN_KEY || process.env.ELEVEN_API_KEY || '').trim();
+
 
 function raindropIsConfigured() {
   if (!RAINDROP_API_URL) return false;
