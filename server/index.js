@@ -29,11 +29,51 @@ function raindropIsConfigured() {
 }
 
 // Safe raindropCall -- adds user/org when appropriate and returns parsed body
-async function raindropCall(endpointPath, method = 'POST', payload = null) {
-  if (!raindropIsConfigured()) {
-    return { ok: false, error: 'RAINDROP_NOT_CONFIGURED', path: endpointPath, method, payload };
+async function raindropCall(path, method = "POST", payload = {}) {
+  if (!RAINDROP_API_URL) {
+    return { ok: false, error: "RAINDROP_NOT_CONFIGURED" };
   }
 
+  // Pick correct API key for each Raindrop service
+  let key = null;
+
+  if (path.includes("smartmemory")) {
+    key = process.env.SMARTMEMORY_API_KEY;
+  } else if (path.includes("smartsql")) {
+    key = process.env.SMARTSQL_API_KEY;
+  } else if (path.includes("smartinference")) {
+    key = process.env.SMARTINFERENCE_API_KEY;
+  }
+
+  if (!key) {
+    return { ok: false, error: "NO_VALID_KEY_FOR_ENDPOINT", path };
+  }
+
+  // Add mandatory fields
+  payload.organization_id = process.env.RAINDROP_ORG_ID;
+  payload.user_id = process.env.RAINDROP_USER_ID;
+
+  try {
+    const response = await fetch(`${RAINDROP_API_URL}${path}`, {
+      method,
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { raw: text };
+    }
+
+  } catch (err) {
+    return { ok: false, error: "RAINDROP_CALL_FAILED", message: err.message };
+  }
+}
   // ensure payload is an object (if provided)
   let bodyObj = (payload && typeof payload === 'object') ? { ...payload } : (payload ? payload : {});
 
