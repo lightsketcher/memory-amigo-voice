@@ -17,22 +17,36 @@ const PORT = process.env.PORT || 8080;
 // ---------------- Raindrop config + safe raindropCall helper ----------------
 const RAINDROP_API_URL = (process.env.RAINDROP_MCP_URL || process.env.RAINDROP_API_URL || '').trim();
 const RAINDROP_API_KEY = (process.env.RAINDROP_API_KEY || '').trim();
-const ELEVEN_KEY = (process.env.ELEVEN_KEY || process.env.ELEVEN_API_KEY || '').trim();
+const RAINDROP_ORG_ID = (process.env.RAINDROP_ORG_ID || '').trim();
+const RAINDROP_USER_ID = (process.env.RAINDROP_USER_ID || '').trim();
 
 function raindropIsConfigured() {
   if (!RAINDROP_API_URL) return false;
   const l = RAINDROP_API_URL.toLowerCase();
-  // treat obvious placeholders as not configured
   if (l.includes('example') || l.includes('raindrop.example') || l.includes('api.raindrop')) return false;
   if (!RAINDROP_API_KEY) return false;
   return true;
 }
 
-// Safe raindropCall: returns RAINDROP_NOT_CONFIGURED if not set, otherwise performs the call
+// Safe raindropCall: returns RAINDROP_NOT_CONFIGURED if not set, otherwise performs the call.
+// If calling smartmemory endpoints we'll ensure user/org fields are present in the payload body.
 async function raindropCall(path, method = 'POST', payload = null) {
   if (!raindropIsConfigured()) {
-    // Return a predictable object so calling code can fallback to mock
     return { ok: false, error: 'RAINDROP_NOT_CONFIGURED', path, method, payload };
+  }
+
+  // If payload is null/undefined and we need to add user/org, start an object
+  let bodyObj = payload && typeof payload === 'object' ? { ...payload } : (payload ? payload : {});
+
+  // For SmartMemory / SmartSQL / SmartInference we may need organization/user info
+  // Add them only if they are available and not already present
+  if (path && (path.toLowerCase().includes('smartmemory') || path.toLowerCase().includes('smartsql') || path.toLowerCase().includes('smartinference'))) {
+    if (RAINDROP_ORG_ID && !bodyObj.organization_id && !bodyObj.organization) {
+      bodyObj.organization_id = RAINDROP_ORG_ID;
+    }
+    if (RAINDROP_USER_ID && !bodyObj.user_id && !bodyObj.user) {
+      bodyObj.user_id = RAINDROP_USER_ID;
+    }
   }
 
   const opts = {
@@ -40,14 +54,91 @@ async function raindropCall(path, method = 'POST', payload = null) {
     headers: {
       'Authorization': `Bearer ${RAINDROP_API_KEY}`,
       'Content-Type': 'application/json'
-    }
+    },
+    body: Object.keys(bodyObj).length ? JSON.stringify(bodyObj) : undefined
   };
-  if (payload) opts.body = JSON.stringify(payload);
 
-  const res = await fetch(`${RAINDROP_API_URL}${path}`, opts);
-  const text = await res.text();
-  try { return JSON.parse(text); } catch (e) { return { raw: text, status: res.status, body: text }; }
+  try {
+    // make the request
+    const url = RAINDROP_API_URL.endsWith('/') ? `${RAINDROP_API_URL.slice(0,-1)}${path}` : `${RAINDROP_API_URL}${path}`;
+    const resp = await fetch(url, opts);
+
+    const text = await resp.text();
+    let parsed;
+    try { parsed = JSON.parse(text); }
+    catch (e) { parsed = { raw: text }; }
+
+    // Normalize response shape: return the parsed object (often Raindrop returns { ok: false, ... })
+    return parsed;
+  } catch (e) {
+    console.error('[raindropCall] network/error:', e);
+    return { ok: false, error: 'RAINDROP_CALL_FAILED', message: e.message };
+  }
 }
+
+
+// Safe save that prefers Raindrop only if configured, otherwise uses local mock
+app.post('/api/save', async (req, res) => {
+  const body = req.body || {};
+
+  // Try Raindrop when configured
+  if (raindropIsConfigured()) {
+    try {
+      // Build raindrop payload including any metadata and ensure user/org added by raindropCall
+      const payload = {
+        title: body.title || (body.content || '').slice(0, 40),
+        content: body.content || '',
+        tags: body.tags || [],
+        metadata: {
+          categories: body.categories || [],
+          mood: body.mood || null,
+          date: body.date || new Date().toISOString(),
+          source: body.source || 'voice',
+          audio_url: body.audio_url || null
+        }
+      };
+
+      const result = await raindropCall('/smartmemory/save', 'POST', payload);
+
+      // If Raindrop accepted it (ok:true) send success; if RAINDROP returned an error object, forward it
+      if (result && (result.ok === true || result.result)) {
+        return res.json({ ok: true, result, provider: 'raindrop' });
+      } else {
+        // If returned object says missing fields, include the raw response for debugging
+        console.warn('[RAINDROP SAVE] falling back to mock or forwarding error:', result);
+        // If you want to *always* fallback to mock on any error, comment this next line and let mock run.
+        // For now we fallback to mock after logging
+      }
+    } catch (e) {
+      console.error('Raindrop save attempt failed (exception), falling back to mock', e);
+    }
+  }
+
+  // FALLBACK: write to local mock storage (guaranteed)
+  try {
+    const payload = {
+      title: body.title || (body.content || '').slice(0, 40),
+      content: body.content || '',
+      tags: body.tags || [],
+      metadata: {
+        categories: body.categories || [],
+        mood: body.mood || null,
+        date: body.date || new Date().toISOString(),
+        source: body.source || 'voice',
+        audio_url: body.audio_url || null
+      }
+    };
+    const mem = loadSmartMem();
+    const id = 'mm_' + Date.now();
+    const item = { id, title: payload.title, content: payload.content, tags: payload.tags, metadata: payload.metadata };
+    mem.items.unshift(item);
+    saveSmartMem(mem);
+    return res.json({ ok: true, result: item, mock: true });
+  } catch (e) {
+    console.error('Mock save failed', e);
+    return res.status(500).json({ ok:false, error: e.message });
+  }
+});
 
 
 // Transcribe uploaded audio via ElevenLabs Scribe STT (safe: sends both model_id + model)
